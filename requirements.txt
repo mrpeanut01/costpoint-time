@@ -1,0 +1,2 @@
+holidays>=0.46
+rumps>=0.4
