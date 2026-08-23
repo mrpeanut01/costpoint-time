@@ -201,3 +201,7 @@ launchctl kickstart -k gui/$(id -u)/com.costpoint-timesheet.daily   # run the da
 launchctl bootout   gui/$(id -u)/com.costpoint-timesheet.tray       # stop the menu bar app
 tail -f ~/Library/Logs/costpoint-timesheet.log
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
