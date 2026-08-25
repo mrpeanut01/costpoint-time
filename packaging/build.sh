@@ -179,12 +179,19 @@ for bundle in "${bundles[@]}"; do
   codesign "${SIGN_ARGS[@]}" "$bundle"
 done
 
-# The two launchers in Contents/MacOS need the entitlements in their own right:
-# launchd runs costpoint-timesheet directly, not through the app, so it gets the
-# hardened runtime with whatever its own signature grants and nothing else.
+# Everything in Contents/MacOS needs the entitlements in its own right. Anything
+# started from outside the app — launchd runs costpoint-timesheet directly — gets
+# the hardened runtime with whatever its own signature grants and nothing else,
+# and a bundled CPython without these exceptions dies on its first ctypes call.
+# Not a list of names: py2app puts its own `python` in here alongside our two,
+# and the next version of it may well put something else.
 ENTITLE_ARGS=()
 [ -n "$IDENTITY" ] && ENTITLE_ARGS=(--entitlements "$ENTITLEMENTS")
-codesign "${SIGN_ARGS[@]}" "${ENTITLE_ARGS[@]+"${ENTITLE_ARGS[@]}"}" "$CLI_EXE"
+for executable in "$APP/Contents/MacOS"/*; do
+  if [ -L "$executable" ] || [ ! -f "$executable" ]; then continue; fi
+  info "entitling $(basename "$executable")"
+  codesign "${SIGN_ARGS[@]}" "${ENTITLE_ARGS[@]+"${ENTITLE_ARGS[@]}"}" "$executable"
+done
 
 # Last, and with the entitlements: signing a bundle re-signs its CFBundleExecutable
 # in place, so this is also what puts them on the menu bar app.
