@@ -821,15 +821,12 @@ class TrayApp(rumps.App):
         """Running from the disk image, or from Gatekeeper's translocated copy.
 
         Both are read-only paths that won't exist next time, so there is nothing
-        useful to schedule against — say so plainly and stop rather than install
-        a job that would silently never run.
+        useful to schedule against — say so plainly, with the fix, and stop
+        rather than install a job that would silently never run.
         """
         rumps.alert(
-            title="Move Costpoint Timesheet to Applications",
-            message=(f"{reason}\n\nDrag it into your Applications folder and open it "
-                     "from there. Until then the daily run can't be scheduled, "
-                     "because the copy it would point at disappears as soon as the "
-                     "disk image is ejected."),
+            title="Costpoint Timesheet isn't installed yet",
+            message=f"{reason}\n\n{planning.bundle_fix_advice()}",
             ok="Quit")
         rumps.quit_application()
 

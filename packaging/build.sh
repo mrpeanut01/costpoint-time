@@ -115,8 +115,8 @@ if [ -n "$IDENTITY" ]; then
 else
   # Ad-hoc still matters: an arm64 binary without any signature at all will not
   # load. It buys nothing with Gatekeeper, which is what the naming says.
-  info "no Developer ID — signing ad-hoc. Gatekeeper will refuse this build"
-  info "on any Mac but the one that built it (see README: 'Unsigned builds')."
+  info "no Developer ID — signing ad-hoc. Gatekeeper will hold this build until"
+  info "whoever downloads it clears the quarantine flag; see docs/RELEASING.md."
   SIGN_ARGS=(--force --sign -)
   NOTARIZE=0
 fi
@@ -275,5 +275,6 @@ if [ "$NOTARIZE" = 1 ]; then
 elif [ -n "$IDENTITY" ]; then
   info "signed but NOT notarized — Gatekeeper will still block it on other Macs"
 else
-  info "unsigned development build — see README, 'Unsigned builds'"
+  info "unsigned — after installing it, once:"
+  info "  xattr -dr com.apple.quarantine \"/Applications/$APP_NAME.app\""
 fi

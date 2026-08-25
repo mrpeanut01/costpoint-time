@@ -439,23 +439,51 @@ def bundle_version() -> str:
         return "dev"
 
 
+QUARANTINE_FIX = 'xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"'
+
+
 def bundle_is_unstable() -> str:
     """Why this copy is in no fit state to be wired into launchd — '' if it is.
 
     An app run straight off the .dmg lives under /Volumes and vanishes when the
-    image is ejected; a quarantined app Gatekeeper has *translocated* is running
-    from a randomly-named read-only mount that won't exist next time. Pointing a
-    launch agent at either produces a job that silently never runs again.
+    image is ejected; an app still carrying the quarantine flag gets *translocated*
+    by Gatekeeper and runs from a randomly-named read-only mount that won't exist
+    next time. Pointing a launch agent at either produces a job that silently
+    never runs again.
+
+    One line, because this also reaches the menu as a status line and travels as
+    an exception message. bundle_fix_advice() is the long version.
     """
     bundle = app_bundle()
     if not bundle:
         return ""
     if "/AppTranslocation/" in bundle:
-        return ("macOS is running Costpoint Timesheet from a temporary read-only copy "
-                "because it was launched straight from the disk image.")
+        return ("macOS is running Costpoint Timesheet from a temporary copy of its own, "
+                "because the app is still flagged as downloaded.")
     if bundle.startswith("/Volumes/"):
         return "Costpoint Timesheet is running from a disk image, not from your Mac."
     return ""
+
+
+def bundle_fix_advice() -> str:
+    """What to do about it, for somewhere with room to say it.
+
+    Worth distinguishing the two: telling someone to move the app to Applications
+    when it is already sitting in Applications, and the real problem is a flag
+    macOS set on it at download, is a dead end.
+    """
+    if "/AppTranslocation/" in (app_bundle() or ""):
+        return ("The app itself is fine — this is the flag macOS puts on anything "
+                "downloaded, and it stays set because these builds aren't signed with "
+                "an Apple Developer ID.\n\n"
+                "Move the app to your Applications folder if it isn't there already, "
+                "then run this once in Terminal:\n\n"
+                f"    {QUARANTINE_FIX}\n\n"
+                "and open the app again.")
+    return ("Drag the app into your Applications folder, then clear the flag macOS "
+            "put on it when it was downloaded:\n\n"
+            f"    {QUARANTINE_FIX}\n\n"
+            "and open it from Applications.")
 
 
 def _executable(name: str, fallback_script: str) -> list[str]:

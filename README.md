@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <em>macOS 11+ · universal · signed and notarized · no Python to install</em>
+  <em>macOS 11+ · universal · no Python to install</em>
 </p>
 
 ---
@@ -48,30 +48,47 @@ for the root certificates.
 
 ## Install
 
-Download the latest **[.dmg](https://github.com/mrpeanut01/costpoint-time/releases/latest)**,
-open it, and drag Costpoint Timesheet into Applications. Then open it from there.
-
 macOS 11 Big Sur or later, Apple Silicon or Intel. Python 3.13 is inside the app —
 you don't need one, and the app doesn't touch the one you have.
 
-It's signed with a Developer ID and notarized by Apple, so it opens on a
-double-click. No right-click → Open, no quarantine to clear, no Gatekeeper panel.
+1. Download the latest **[.dmg](https://github.com/mrpeanut01/costpoint-time/releases/latest)**
+   and open it.
+2. Drag **Costpoint Timesheet** into Applications.
+3. Tell macOS you meant it:
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"
+   ```
+
+4. Open it from Applications. The ⚪️ dot in the menu bar is where setup starts.
+
+Step 3 is there because these builds aren't signed with an Apple Developer ID
+(that needs a paid membership). macOS flags anything downloaded as untrusted and
+won't open it until told otherwise; the command clears that flag. If you'd rather
+not use Terminal: open the app, dismiss the warning, then go to System Settings →
+Privacy & Security and click **Open Anyway**.
+
+Nothing else about the app is different — it's the same build either way, and
+[`docs/RELEASING.md`](docs/RELEASING.md) covers turning signing on if a
+membership ever appears.
 
 **There is no installer**, because opening the app *is* the install: it writes its
 own two launch agents — the daily run, and itself at login — pointing at wherever
 you put it. Move the app later, or replace it with a newer one, and the next
 launch repairs them.
 
-> **Open it from Applications, not from the disk image.** Launched off the .dmg,
-> macOS runs the app from a temporary read-only copy that vanishes on eject —
-> there'd be nothing left for the daily job to point at. The app checks, and says
+> **Open it from Applications, not from the disk image**, and don't skip step 3.
+> While that quarantine flag is set, macOS runs the app from a temporary
+> read-only copy of its own at a path that won't exist next time — so there'd be
+> nothing left for the daily job to point at. The app checks for this, and says
 > so, rather than scheduling a run that would silently never happen.
 
 ### Upgrading
 
-Drag the new app over the old one and open it. Your credentials, plan and charge
-codes live in `~/Library/Application Support/costpoint-timesheet/` and aren't
-touched.
+Drag the new app over the old one, clear the quarantine flag again (step 3 —
+it comes back with every download), and open it. Your credentials, plan and
+charge codes live in `~/Library/Application Support/costpoint-timesheet/` and
+aren't touched.
 
 Coming from a `./deploy.sh` install, it's the same: the app takes over both
 launch agents the first time you open it. The old `.venv` in that directory is
@@ -273,15 +290,17 @@ neither, and would produce an app that only runs on the machine that built it.
 Tagging is what publishes: bump `appversion.py`, commit, `git tag v1.2.3`, push.
 [docs/RELEASING.md](docs/RELEASING.md) covers the certificates and the secrets.
 
-### Unsigned builds
+### Signing
 
-A release .dmg is signed and notarized. One you build with `--adhoc`, or download
-from a CI run, is only ad-hoc signed — enough for the binaries to load, not enough
-for Gatekeeper. Clear the quarantine flag by hand:
+`build.sh` signs with a Developer ID if it finds one in your keychain, and
+notarizes if the credentials are in the environment; with neither it falls back
+to an ad-hoc signature — enough for the binaries to load, not enough for
+Gatekeeper — and names the `.dmg` `-unsigned` so nobody has to guess which they
+have. That's what the releases are today, hence step 3 of the install.
 
-```bash
-xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"
-```
+Turning it on later changes nothing but the install: add the secrets from
+[docs/RELEASING.md](docs/RELEASING.md), tag as usual, and the release notes
+drop step 3 on their own.
 
 **Quit** stops the app until the next login or the next weekday morning: launchd
 starts it at login, and retries each weekday at 07:00 in case it exited while you
