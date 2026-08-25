@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from datetime import date, datetime, timedelta
 
@@ -29,6 +30,49 @@ STATUS_PATH = os.path.join(APP_DIR, "status.json")
 LOG_PATH = os.path.expanduser("~/Library/Logs/costpoint-timesheet.log")
 
 CRED_KEYS = ("COSTPOINT_ORGANIZATION", "COSTPOINT_USERNAME", "COSTPOINT_PASSWORD")
+
+# The log is append-only and shared by both launch agents, so it can only be
+# trimmed in a way that survives another process holding an inherited fd on it.
+LOG_MAX_BYTES = 4 * 1024 * 1024
+
+
+# ── the log ───────────────────────────────────────────────────────────────────
+def _stdout_is_captured() -> bool:
+    """Is anything actually listening to stdout?
+
+    launchd points the agents' stdout at LOG_PATH, and a terminal is obviously
+    live — but an app double-clicked in Finder gets /dev/null, and everything
+    printed there is lost.
+    """
+    import stat
+    try:
+        fd = sys.stdout.fileno()
+        st = os.fstat(fd)
+    except (AttributeError, ValueError, OSError):
+        return False
+    if stat.S_ISCHR(st.st_mode):          # a tty counts; /dev/null does not
+        return os.isatty(fd)
+    return True                            # a file, pipe or socket: someone has it
+
+
+def setup_logging() -> None:
+    """Make sure this process's output reaches ~/Library/Logs, however it started."""
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        if os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            # Truncate in place rather than rotate: launchd and any already-running
+            # sibling hold O_APPEND fds on this exact inode, and renaming the file
+            # would send their writes to something nobody can read.
+            os.truncate(LOG_PATH, 0)
+    except OSError:
+        pass
+    if _stdout_is_captured():
+        return
+    try:
+        fh = open(LOG_PATH, "a", buffering=1)
+    except OSError:
+        return
+    sys.stdout = sys.stderr = fh
 
 
 # ── .env handling ─────────────────────────────────────────────────────────────
@@ -350,50 +394,191 @@ class Plan:
                 self.holidays.pop(iso, None)
 
 
-# ── the scheduled launchd job ─────────────────────────────────────────────────
-JOB_LABEL = "com.costpoint-timesheet.daily"
-JOB_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{JOB_LABEL}.plist")
+# ── which copy of the app is this? ────────────────────────────────────────────
+# Everything below has to name an executable in a launchd plist, and that
+# executable lives somewhere different depending on how the app was installed:
+# inside Costpoint Timesheet.app when it came from the .dmg, or next to this
+# file when it was deployed from a source checkout by deploy.sh.
+BUNDLE_ID = "com.costpoint-timesheet.app"
+CLI_EXECUTABLE = "costpoint-timesheet"      # the bundle's command-line entry point
 
 
-def _job() -> tuple[str, str]:
-    return JOB_LABEL, JOB_PLIST
+def is_bundled() -> bool:
+    """True when running from inside a py2app .app bundle."""
+    return getattr(sys, "frozen", "") == "macosx_app"
 
 
-def read_schedule() -> tuple[int, int] | None:
-    """(hour, minute) the daily job is set to fire at, or None if it isn't
-    installed yet (i.e. deploy.sh hasn't been run)."""
+def app_bundle() -> str | None:
+    """The enclosing .app, or None when running from a source checkout."""
+    if not is_bundled():
+        return None
+    path = os.path.abspath(sys.executable)
+    while path not in ("/", ""):
+        if path.endswith(".app") and os.path.exists(os.path.join(path, "Contents", "Info.plist")):
+            return path
+        path = os.path.dirname(path)
+    return None
+
+
+def bundle_version() -> str:
+    """The bundle's CFBundleShortVersionString, or the source version."""
+    bundle = app_bundle()
+    if bundle:
+        import plistlib
+        try:
+            with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as fh:
+                v = plistlib.load(fh).get("CFBundleShortVersionString")
+            if v:
+                return str(v)
+        except (OSError, ValueError):
+            pass
+    try:
+        from appversion import __version__
+        return __version__
+    except ImportError:
+        return "dev"
+
+
+def bundle_is_unstable() -> str:
+    """Why this copy is in no fit state to be wired into launchd — '' if it is.
+
+    An app run straight off the .dmg lives under /Volumes and vanishes when the
+    image is ejected; a quarantined app Gatekeeper has *translocated* is running
+    from a randomly-named read-only mount that won't exist next time. Pointing a
+    launch agent at either produces a job that silently never runs again.
+    """
+    bundle = app_bundle()
+    if not bundle:
+        return ""
+    if "/AppTranslocation/" in bundle:
+        return ("macOS is running Costpoint Timesheet from a temporary read-only copy "
+                "because it was launched straight from the disk image.")
+    if bundle.startswith("/Volumes/"):
+        return "Costpoint Timesheet is running from a disk image, not from your Mac."
+    return ""
+
+
+def _executable(name: str, fallback_script: str) -> list[str]:
+    """argv for one of our two entry points, bundled or not."""
+    bundle = app_bundle()
+    if bundle:
+        return [os.path.join(bundle, "Contents", "MacOS", name)]
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [sys.executable, os.path.join(here, fallback_script)]
+
+
+def _main_executable_name() -> str:
+    """CFBundleExecutable — the GUI stub's filename inside Contents/MacOS."""
+    bundle = app_bundle()
+    if not bundle:
+        return ""
     import plistlib
     try:
-        with open(_job()[1], "rb") as fh:
-            pl = plistlib.load(fh)
+        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as fh:
+            return str(plistlib.load(fh).get("CFBundleExecutable") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def tray_command() -> list[str]:
+    """argv that starts the menu bar app. `--agent` tells it launchd is the
+    caller, which changes how it behaves when another copy already holds the
+    single-instance lock."""
+    return _executable(_main_executable_name(), "tray.py") + ["--agent"]
+
+
+def daily_command() -> list[str]:
+    """argv for the scheduled run that actually files the timesheet."""
+    return _executable(CLI_EXECUTABLE, "timesheet.py") + ["--save"]
+
+
+# ── the launch agents ─────────────────────────────────────────────────────────
+#   com.costpoint-timesheet.daily   weekdays at the hour you pick: file and sign
+#   com.costpoint-timesheet.tray    at login: the menu bar app
+#
+# Both plists are generated here rather than by an install script, so the app
+# can repair them itself — dragging Costpoint Timesheet.app to a new folder
+# would otherwise leave two launchd jobs pointing at a path that no longer
+# exists, and nothing would say so until the day a timesheet went unfiled.
+DAILY_LABEL = "com.costpoint-timesheet.daily"
+TRAY_LABEL = "com.costpoint-timesheet.tray"
+LAUNCH_AGENTS_DIR = os.path.expanduser("~/Library/LaunchAgents")
+DAILY_PLIST = os.path.join(LAUNCH_AGENTS_DIR, f"{DAILY_LABEL}.plist")
+TRAY_PLIST = os.path.join(LAUNCH_AGENTS_DIR, f"{TRAY_LABEL}.plist")
+
+DEFAULT_HOUR, DEFAULT_MINUTE = 9, 0
+WEEKDAYS = range(1, 6)                       # launchd: Monday…Friday
+TRAY_RETRY_HOUR = 7                          # see tray_plist() for why
+
+# Kept because deploy.sh and older checkouts import them by these names.
+JOB_LABEL = DAILY_LABEL
+JOB_PLIST = DAILY_PLIST
+
+
+def daily_plist(hour: int, minute: int) -> dict:
+    """Run early: a day missed while the Mac was asleep is backfilled before it
+    counts as late."""
+    return {
+        "Label": DAILY_LABEL,
+        "ProgramArguments": daily_command(),
+        "WorkingDirectory": APP_DIR,
+        "StartCalendarInterval": [
+            {"Weekday": wd, "Hour": int(hour), "Minute": int(minute)} for wd in WEEKDAYS
+        ],
+        "StandardOutPath": LOG_PATH,
+        "StandardErrorPath": LOG_PATH,
+        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "RunAtLoad": False,
+    }
+
+
+def tray_plist() -> dict:
+    return {
+        "Label": TRAY_LABEL,
+        "ProgramArguments": tray_command(),
+        "WorkingDirectory": APP_DIR,
+        "RunAtLoad": True,
+        # Restart it if it crashes, but respect Quit from the menu (a clean exit).
+        "KeepAlive": {"SuccessfulExit": False},
+        # RunAtLoad only fires at login, so on a Mac that stays logged in for
+        # weeks a clean Quit would leave the app down indefinitely. Try again
+        # each weekday morning; the app's own lock file means a second start
+        # while it's already running is a no-op.
+        "StartCalendarInterval": [
+            {"Weekday": wd, "Hour": TRAY_RETRY_HOUR, "Minute": 0} for wd in WEEKDAYS
+        ],
+        "StandardOutPath": LOG_PATH,
+        "StandardErrorPath": LOG_PATH,
+        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+    }
+
+
+def _read_plist(path: str) -> dict | None:
+    import plistlib
+    try:
+        with open(path, "rb") as fh:
+            return plistlib.load(fh)
     except (OSError, ValueError):
         return None
-    cal = pl.get("StartCalendarInterval") or []
-    if isinstance(cal, dict):
-        cal = [cal]
-    if not cal:
-        return None
-    return int(cal[0].get("Hour", 9)), int(cal[0].get("Minute", 0))
 
 
-def write_schedule(hour: int, minute: int) -> str:
-    """Repoint the daily job at a new time and reload it. Returns a status line.
-
-    Rewrites only StartCalendarInterval, so everything else deploy.sh put in the
-    plist (paths, logging, environment) is preserved.
-    """
+def _write_plist(path: str, data: dict) -> None:
     import plistlib
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".plist")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            plistlib.dump(data, fh)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _reload_agent(label: str, path: str) -> None:
     import subprocess
-    label, path = _job()
-    if not os.path.exists(path):
-        raise FileNotFoundError("The daily job isn't installed yet — run ./deploy.sh first.")
-    with open(path, "rb") as fh:
-        pl = plistlib.load(fh)
-    pl["StartCalendarInterval"] = [
-        {"Weekday": wd, "Hour": int(hour), "Minute": int(minute)} for wd in range(1, 6)
-    ]
-    with open(path, "wb") as fh:
-        plistlib.dump(pl, fh)
     uid = os.getuid()
     subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"],
                    capture_output=True, check=False)
@@ -401,6 +586,77 @@ def write_schedule(hour: int, minute: int) -> str:
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"launchctl bootstrap failed: {r.stderr.strip() or r.returncode}")
+
+
+def sync_agents(managed: bool = False, force: bool = False) -> list[str]:
+    """Point both launch agents at *this* copy of the app. Returns the labels
+    that actually needed rewriting, so a normal launch is silent.
+
+    `managed=True` means launchd started this very process from the tray agent.
+    Its plist is then written but not reloaded: booting the job out would kill
+    us mid-launch, and launchd re-reads ~/Library/LaunchAgents at every login,
+    so the new definition takes effect on its own.
+
+    `force=True` reloads both jobs even when their plists already say the right
+    thing. That is what deploy.sh wants — the code behind an unchanged plist has
+    just been replaced, and a running tray would otherwise carry on as it was.
+    """
+    reason = bundle_is_unstable()
+    if reason:
+        raise RuntimeError(reason)
+
+    hour, minute = read_schedule() or (DEFAULT_HOUR, DEFAULT_MINUTE)
+    changed = []
+    for path, want, reload_it in (
+        (DAILY_PLIST, daily_plist(hour, minute), True),
+        (TRAY_PLIST, tray_plist(), not managed),
+    ):
+        stale = _read_plist(path) != want
+        if not stale and not force:
+            continue
+        if stale:
+            _write_plist(path, want)
+            changed.append(want["Label"])
+        if reload_it:
+            _reload_agent(want["Label"], path)
+    return changed
+
+
+def remove_agents() -> None:
+    """Unload and delete both agents. The app's data in APP_DIR is left alone."""
+    import subprocess
+    uid = os.getuid()
+    for label, path in ((DAILY_LABEL, DAILY_PLIST), (TRAY_LABEL, TRAY_PLIST)):
+        subprocess.run(["launchctl", "bootout", f"gui/{uid}/{label}"],
+                       capture_output=True, check=False)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def read_schedule() -> tuple[int, int] | None:
+    """(hour, minute) the daily job fires at, or None if it isn't installed."""
+    cal = (_read_plist(DAILY_PLIST) or {}).get("StartCalendarInterval") or []
+    if isinstance(cal, dict):
+        cal = [cal]
+    if not cal:
+        return None
+    return int(cal[0].get("Hour", DEFAULT_HOUR)), int(cal[0].get("Minute", 0))
+
+
+def write_schedule(hour: int, minute: int) -> str:
+    """Move the daily job to a new time and reload it. Returns a status line.
+
+    The plist is regenerated rather than patched, so this doubles as a repair:
+    a job left pointing at an app that has since moved is fixed by picking a
+    time — or by any launch of the app, via sync_agents().
+    """
+    reason = bundle_is_unstable()
+    if reason:
+        raise RuntimeError(reason)
+    _write_plist(DAILY_PLIST, daily_plist(hour, minute))
+    _reload_agent(DAILY_LABEL, DAILY_PLIST)
     return f"Daily run moved to {fmt_time(hour, minute)}."
 
 

@@ -1,2 +1,7 @@
 holidays>=0.46
 rumps>=0.4
+
+# The CA bundle. Only strictly needed by the packaged .app — the interpreter
+# that goes inside it trusts a certificate store that only exists on the build
+# machine. See default_ssl_context() in costpoint_mobile.py.
+certifi>=2024.2.2

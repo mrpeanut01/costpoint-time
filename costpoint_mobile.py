@@ -63,6 +63,30 @@ class Rs:
     CHARGE_FAVE = "TMMTS_CHARGE_FAVE"
 
 
+def default_ssl_context() -> ssl.SSLContext:
+    """A verifying TLS context that also works from inside an .app bundle.
+
+    ssl.create_default_context() with no arguments trusts whatever OpenSSL was
+    compiled to look at — and the interpreter that gets bundled into
+    Costpoint Timesheet.app was compiled to look inside its own framework, at a
+    path that exists on the machine that built it and nowhere else. Every
+    request would fail CERTIFICATE_VERIFY_FAILED on the user's Mac.
+
+    certifi is the same Mozilla root list Homebrew's Python trusts, shipped
+    alongside the app so the path is always there. It stays optional: without it
+    this falls back to the interpreter's own store, which is correct for a
+    normal `python timesheet.py` from a checkout.
+    """
+    try:
+        import certifi
+    except ImportError:
+        return ssl.create_default_context()
+    try:
+        return ssl.create_default_context(cafile=certifi.where())
+    except OSError:                       # a certifi with no readable bundle
+        return ssl.create_default_context()
+
+
 class CostpointMobile:
     DEFAULT_BASE_PATH = "/DeltekTouch/Costpoint/TE"
     SHARED = "cpshared"
@@ -78,7 +102,7 @@ class CostpointMobile:
         self.user_agent = user_agent
         self.timeout = timeout
         self.verbose = verbose
-        self._ctx = ssl.create_default_context()
+        self._ctx = default_ssl_context()
 
         # session state (populated by login)
         self.server_version: str | None = None
