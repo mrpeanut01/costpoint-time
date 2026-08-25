@@ -28,6 +28,13 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
 
+    env:
+      # A step's `if:` may not read the `secrets` context — only a job's `env`
+      # may — so "do we have credentials" is answered once here and the steps
+      # test the answer. Both are the string "true" or "false".
+      HAVE_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      HAVE_NOTARY_KEY: ${{ secrets.NOTARY_KEY_P8 != '' }}
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,7 +66,7 @@ jobs:
       # python.org macos11 package is the universal2 framework build.
       - name: Install the universal2 Python from python.org
         env:
-          WANTED: ${{ inputs.python_version || '3.13.7' }}
+          WANTED: ${{ github.event.inputs.python_version || '3.13.7' }}
         run: |
           set -euo pipefail
           base="https://www.python.org/ftp/python"
@@ -88,7 +95,7 @@ jobs:
       # been given the secrets — build.sh then falls back to an ad-hoc signature
       # and names the .dmg "-unsigned", which the publish step refuses to release.
       - name: Import the Developer ID certificate
-        if: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+        if: env.HAVE_CERTIFICATE == 'true'
         env:
           CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -127,7 +134,7 @@ jobs:
           echo "SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
 
       - name: Write the notarization key
-        if: ${{ secrets.NOTARY_KEY_P8 != '' }}
+        if: env.HAVE_NOTARY_KEY == 'true'
         env:
           NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
         run: |
