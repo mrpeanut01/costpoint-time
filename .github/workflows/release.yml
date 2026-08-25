@@ -174,19 +174,29 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # A .dmg nobody can open isn't a release. The artifact above is still
-      # there to download and test with.
-      - name: A tagged release has to be signed and notarized
+      # Which kind of release this is decides what the notes have to tell people
+      # to do. A notarized build is checked here; an unsigned one is published
+      # anyway, because an unsigned .dmg plus one Terminal command is still a
+      # working install, and refusing to release without an Apple Developer
+      # membership would help nobody.
+      - name: Work out what kind of release this is
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          if ls dist/*-unsigned.dmg >/dev/null 2>&1; then
-            echo "::error::built unsigned — add the signing secrets (see docs/RELEASING.md) and re-tag."
-            exit 1
-          fi
           dmg="$(ls dist/*.dmg)"
-          xcrun stapler validate "$dmg"
-          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+          case "$dmg" in
+            *-unsigned.dmg)
+              echo "::warning::Publishing unsigned: macOS will quarantine this download and \
+          refuse to open it until the user clears the flag. The release notes say so. \
+          To sign and notarize instead, see docs/RELEASING.md."
+              echo "NOTARIZED=false" >> "$GITHUB_ENV"
+              ;;
+            *)
+              xcrun stapler validate "$dmg"
+              spctl --assess --type open --context context:primary-signature -vv "$dmg"
+              echo "NOTARIZED=true" >> "$GITHUB_ENV"
+              ;;
+          esac
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -200,11 +210,26 @@ jobs:
 
           {
             echo "Download **$(basename "$dmg")**, open it, and drag Costpoint Timesheet"
-            echo "into Applications. Open it once from there: it installs its own launch"
-            echo "agents, and the ⚪️ dot in the menu bar is where setup starts."
+            echo "into Applications."
             echo
-            echo "Signed with a Developer ID and notarized by Apple, so it opens with a"
-            echo "double-click — no right-click-Open, no quarantine to clear."
+            if [ "${NOTARIZED:-false}" = "true" ]; then
+              echo "Signed with a Developer ID and notarized by Apple, so it opens with a"
+              echo "double-click — no right-click-Open, no quarantine to clear."
+            else
+              echo "This build isn't signed with an Apple Developer ID, so macOS marks it as"
+              echo "downloaded and won't open it until you say otherwise. Once, after dragging"
+              echo "it in:"
+              echo
+              echo '```bash'
+              echo 'xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"'
+              echo '```'
+              echo
+              echo "Without Terminal: open the app, dismiss the warning, then System Settings →"
+              echo "Privacy & Security → **Open Anyway**."
+            fi
+            echo
+            echo "Then open it from Applications. It installs its own launch agents on first"
+            echo "launch, and the ⚪️ dot in the menu bar is where setup starts."
             echo
             echo "Requires macOS 11 Big Sur or later. Universal — Apple Silicon and Intel."
             echo

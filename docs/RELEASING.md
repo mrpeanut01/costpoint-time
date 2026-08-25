@@ -6,13 +6,33 @@ A release is a tag. Bump `appversion.py`, commit, tag, push:
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-`.github/workflows/release.yml` then builds `Costpoint Timesheet.app`, signs it,
-sends it to Apple for notarization, staples the ticket, wraps it in a `.dmg` and
-attaches that to a GitHub Release. The workflow refuses to publish if the tag and
-`appversion.__version__` disagree, or if the build came out unsigned.
+`.github/workflows/release.yml` then builds `Costpoint Timesheet.app`, signs it
+if it can, wraps it in a `.dmg` and attaches that to a GitHub Release. The only
+thing it refuses to publish is a tag that disagrees with
+`appversion.__version__`.
 
-Every push to a pull request builds the same `.dmg` unsigned and leaves it as a
-workflow artifact, so packaging breaks show up in review rather than at a tag.
+Every push to a pull request builds the same `.dmg` and leaves it as a workflow
+artifact, so packaging breaks show up in review rather than at a tag.
+
+## Signing is optional
+
+Without an Apple Developer ID the build is ad-hoc signed and the `.dmg` is named
+`-unsigned`. That release still works — it is byte-for-byte the same app — but
+macOS flags the download and won't open it until the user clears the flag:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"
+```
+
+The workflow puts that command in the release notes when the build is unsigned,
+and leaves it out when it isn't, so the notes always match what people will
+actually hit. Until the flag is cleared, Gatekeeper also runs the app from a
+translocated read-only copy, which the app detects and explains rather than
+scheduling a daily job against a path that won't exist tomorrow.
+
+**That's the whole difference.** Add the certificate and the notarization key
+below and the same tag produces a `.dmg` that opens on a double-click, with no
+change to the app, the workflow or the process.
 
 ---
 
@@ -37,13 +57,10 @@ so a release you build on your own Mac is the same release.
    first launch works with no network.
 6. **Build the `.dmg`**, sign it, notarize it, staple it too.
 
-## Prerequisites
+## Turning signing on
 
-An **Apple Developer Program** membership ($99/year). Notarization is not
-available without one, and without notarization macOS refuses to open the app on
-any Mac but the one that built it.
-
-Then, once:
+You need an **Apple Developer Program** membership ($99/year); notarization isn't
+available without one. Then, once:
 
 1. **Create a Developer ID Application certificate.** Xcode → Settings →
    Accounts → Manage Certificates → **+** → Developer ID Application. Or the
@@ -60,6 +77,10 @@ Then, once:
 An Apple ID with an app-specific password works too, and `packaging/build.sh`
 accepts it (`NOTARY_APPLE_ID` / `NOTARY_PASSWORD` / `NOTARY_TEAM_ID`), but an API
 key is scoped to notarization and can be revoked on its own.
+
+Once the secrets are in, the next tag is signed and notarized. The first one is
+worth watching: signing and notarization are the part CI cannot exercise until a
+certificate exists, so budget a round of **When it goes wrong** below.
 
 ## Repository secrets
 
