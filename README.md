@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon.png" alt="" width="120">
+</p>
+
 <h1 align="center">Costpoint Timesheet</h1>
 
 <p align="center">
@@ -12,7 +16,11 @@
 </p>
 
 <p align="center">
-  <em>macOS · Python 3.13 · no browser automation · two dependencies</em>
+  <a href="https://github.com/mrpeanut01/costpoint-time/releases/latest"><strong>Download the .dmg →</strong></a>
+</p>
+
+<p align="center">
+  <em>macOS 11+ · universal · signed and notarized · no Python to install</em>
 </p>
 
 ---
@@ -24,7 +32,8 @@ out of the way as a single coloured dot.
 
 It talks to the **same JSON API the official Costpoint mobile app uses** — three
 POSTs to sign in, a batch of result-set calls to read and save. No headless
-browser, no DOM scraping, no screenshots. The client is stdlib-only.
+browser, no DOM scraping, no screenshots. The client is `urllib`, plus certifi
+for the root certificates.
 
 ## What it does
 
@@ -39,22 +48,34 @@ browser, no DOM scraping, no screenshots. The client is stdlib-only.
 
 ## Install
 
-Requires macOS and Python 3.13 (`brew install python@3.13`).
+Download the latest **[.dmg](https://github.com/mrpeanut01/costpoint-time/releases/latest)**,
+open it, and drag Costpoint Timesheet into Applications. Then open it from there.
 
-```bash
-git clone https://github.com/mrpeanut01/costpoint-time
-cd costpoint-time
-./deploy.sh
-```
+macOS 11 Big Sur or later, Apple Silicon or Intel. Python 3.13 is inside the app —
+you don't need one, and the app doesn't touch the one you have.
 
-`deploy.sh` builds a self-contained copy under `~/Library/Application Support/`
-and installs two launch agents — the daily run, and the menu bar app at login.
-Re-run it after pulling changes.
+It's signed with a Developer ID and notarized by Apple, so it opens on a
+double-click. No right-click → Open, no quarantine to clear, no Gatekeeper panel.
 
-> **Why it deploys out of the repo:** macOS TCC blocks launchd agents from reading
-> `~/Documents`, so a venv living there hangs forever in `open()` at Python startup
-> when launchd starts it — while working perfectly from Terminal. Running from
-> Application Support avoids it entirely.
+**There is no installer**, because opening the app *is* the install: it writes its
+own two launch agents — the daily run, and itself at login — pointing at wherever
+you put it. Move the app later, or replace it with a newer one, and the next
+launch repairs them.
+
+> **Open it from Applications, not from the disk image.** Launched off the .dmg,
+> macOS runs the app from a temporary read-only copy that vanishes on eject —
+> there'd be nothing left for the daily job to point at. The app checks, and says
+> so, rather than scheduling a run that would silently never happen.
+
+### Upgrading
+
+Drag the new app over the old one and open it. Your credentials, plan and charge
+codes live in `~/Library/Application Support/costpoint-timesheet/` and aren't
+touched.
+
+Coming from a `./deploy.sh` install, it's the same: the app takes over both
+launch agents the first time you open it. The old `.venv` in that directory is
+dead weight afterwards and can go.
 
 ## First run
 
@@ -135,9 +156,26 @@ Nothing is sent anywhere except your own Costpoint server. `plan.json` is the wh
 contract between the menu bar app and the scheduled run — quit the app and the
 automation carries on without it.
 
+## Uninstall
+
+```bash
+launchctl bootout gui/$(id -u)/com.costpoint-timesheet.tray
+launchctl bootout gui/$(id -u)/com.costpoint-timesheet.daily
+rm -f ~/Library/LaunchAgents/com.costpoint-timesheet.*.plist
+rm -rf "/Applications/Costpoint Timesheet.app"
+```
+
+That's the app and both scheduled jobs gone. Your data outlives it on purpose —
+reinstalling picks up where you left off. To take that too:
+
+```bash
+rm -rf ~/Library/Application\ Support/costpoint-timesheet
+rm -f  ~/Library/Logs/costpoint-timesheet.log
+```
+
 ## Limits
 
-- **macOS only.** The scheduler is launchd and the UI is AppKit.
+- **macOS 11+ only.** The scheduler is launchd and the UI is AppKit.
 - **MFA can't be automated.** A one-time passcode isn't a static secret. Interactive runs prompt for it; an unattended account that requires MFA needs an MFA-exempt service account.
 - **SSO/SAML isn't implemented.** The `loginSaml` flow is mapped in the docs but not built.
 - **No password changes.** The mobile API exposes exactly five methods — `login`, `loginMfa`, `loginSaml`, `api`, `logout`. Change your password in the Costpoint web UI, then update it here.
@@ -152,6 +190,15 @@ python timesheet.py                  # dry run: load live, print what would chan
 python timesheet.py --save           # file today
 python timesheet.py --charge pto --date 2026-06-08 --save
 python timesheet.py --sign-now --save
+```
+
+Installed from the .dmg, the same CLI is a second executable inside the bundle —
+it's what the daily launch agent runs:
+
+```bash
+alias cpt="/Applications/Costpoint Timesheet.app/Contents/MacOS/costpoint-timesheet"
+cpt --save
+cpt --selftest      # every import, the CA bundle, a TLS handshake, the holiday table
 ```
 
 | Flag | Effect |
@@ -181,9 +228,12 @@ worked out.
 |------|---|
 | `tray.py` | menu bar app — the strip is an `NSView` inside the menu item, because a menu item is one row with one click |
 | `timesheet.py` | business logic and CLI |
-| `plan.py` | config, plan and status stores; owns the launchd schedule |
-| `costpoint_mobile.py` | the REST client (stdlib only) |
-| `deploy.sh` | builds the deployed copy and installs both agents |
+| `plan.py` | config, plan and status stores; owns both launch agents, and knows which copy of the app is running |
+| `costpoint_mobile.py` | the REST client |
+| `costpoint-timesheet.py` | the bundle's headless entry point — what the daily agent runs, and `--selftest` |
+| `setup.py` | py2app: the shape of the `.app` |
+| `packaging/` | build, sign, notarize, `.dmg` — and the icon, which draws itself |
+| `deploy.sh` | installs from a source checkout, for development |
 
 ## Development
 
@@ -193,8 +243,45 @@ pip install -r requirements.txt
 python tray.py          # run the menu bar app from the repo
 ```
 
-Only one instance runs at a time — a hand-run copy and the installed agent won't
-both put an icon in the menu bar.
+`./deploy.sh` installs the code you're editing the way the app installs itself:
+a venv under `~/Library/Application Support/`, and the same two launch agents
+written by the same `plan.py`. Re-run it after a change — it restarts the tray.
+
+> **Why it deploys out of the repo:** macOS TCC blocks launchd agents from reading
+> `~/Documents`, so a venv living there hangs forever in `open()` at Python startup
+> when launchd starts it — while working perfectly from Terminal. Running from
+> Application Support avoids it entirely.
+
+Only one instance runs at a time, and which one gives way depends on who started
+it: a copy launchd started stands down for whatever is already in the menu bar,
+and a copy you launched yourself takes over from it — so opening the app always
+does something visible.
+
+### Building the .dmg
+
+```bash
+packaging/build.sh --adhoc     # unsigned, for testing
+packaging/build.sh             # signed with the Developer ID in your keychain
+```
+
+py2app copies whichever interpreter it was run with straight into the bundle, so
+this wants the **universal2 framework build** from
+[python.org](https://www.python.org/downloads/macos/) — Homebrew's Python is
+neither, and would produce an app that only runs on the machine that built it.
+`build.sh` checks and refuses rather than shipping one.
+
+Tagging is what publishes: bump `appversion.py`, commit, `git tag v1.2.3`, push.
+[docs/RELEASING.md](docs/RELEASING.md) covers the certificates and the secrets.
+
+### Unsigned builds
+
+A release .dmg is signed and notarized. One you build with `--adhoc`, or download
+from a CI run, is only ad-hoc signed — enough for the binaries to load, not enough
+for Gatekeeper. Clear the quarantine flag by hand:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Costpoint Timesheet.app"
+```
 
 **Quit** stops the app until the next login or the next weekday morning: launchd
 starts it at login, and retries each weekday at 07:00 in case it exited while you

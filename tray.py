@@ -21,6 +21,11 @@ menu item is one row, one click.
 No business logic lives here: reads and writes go through timesheet.py, intent
 is stored in plan.py's plan.json, and the scheduled launchd run reads that same
 plan. The tray can be quit at any time without affecting the daily automation.
+
+This is also the installer. Costpoint Timesheet.app ships without one, so every
+launch calls plan.sync_agents() to point the two launch agents at whichever copy
+of the app is running — which is what makes dragging the app out of the .dmg,
+and later moving or replacing it, work with nothing else to do.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ from datetime import date, datetime, timedelta
 
 import plan as planning
 
+planning.setup_logging()
 planning.load_env()
 
 import objc
@@ -658,11 +664,15 @@ class StripView(NSView):
 
 # ── menu bar ──────────────────────────────────────────────────────────────────
 class TrayApp(rumps.App):
-    def __init__(self):
+    def __init__(self, agent: bool = False):
         super().__init__(ICON_UNSET, quit_button=None)
         global _OWNER
         _OWNER = self
+        self.agent = agent            # True when launchd started us, not the user
         self.engine = Engine()
+        # Before the menu is built: this is what writes the schedule that
+        # "Next run" is about to display.
+        self.install_agents()
         self.offset = 0                    # which period the strip is showing
         self._jobs: queue.Queue = queue.Queue()
         threading.Thread(target=self._day_worker, daemon=True).start()
@@ -677,10 +687,14 @@ class TrayApp(rumps.App):
         self.i_next = rumps.MenuItem("⏰  Next run")
         self.i_creds = rumps.MenuItem("🔑  Credentials")
         self.i_charges = rumps.MenuItem("🏷  Charges")
+        # No callback: a plain, greyed-out line, there so a bug report can say
+        # which version it came from.
+        self.i_about = rumps.MenuItem(f"Costpoint Timesheet {planning.bundle_version()}")
         self.menu = [self.i_today, self.i_strip, self.i_period, None,
                      self.i_next, None,
                      self.i_creds, self.i_charges,
                      rumps.MenuItem("📄  Open log", callback=self.open_log), None,
+                     self.i_about,
                      rumps.MenuItem("Quit", callback=rumps.quit_application)]
         self.build_next_menu()
         self.build_creds_menu()
@@ -697,7 +711,8 @@ class TrayApp(rumps.App):
         if planning.have_credentials() and planning.Config.load().host:
             self.spawn(self._verify_and_sync)
         else:
-            self.engine.message = "Add your Costpoint server and sign-in to get started."
+            self.engine.message = (self.engine.message
+                                   or "Add your Costpoint server and sign-in to get started.")
 
     # ── helpers ───────────────────────────────────────────────────────────────
     def spawn(self, fn) -> None:
@@ -779,10 +794,49 @@ class TrayApp(rumps.App):
             self.i_next.add(item)
         self.i_next.add(rumps.MenuItem("        Other time…", callback=self.set_custom_time))
 
+    def install_agents(self) -> None:
+        """Point both launch agents at this copy of the app.
+
+        Runs on every launch, not just the first: there is no installer, so this
+        is what turns "dragged out of the .dmg" into an installed app, and what
+        repairs the schedule after the app is moved, renamed or replaced by a
+        newer version.
+        """
+        reason = planning.bundle_is_unstable()
+        if reason:
+            self.later(lambda: self.warn_not_installed(reason))
+            return
+        try:
+            changed = planning.sync_agents(managed=self.agent)
+        except Exception as e:
+            msg = str(e)
+            log("could not install the launch agents:", msg)
+            self.engine.message = f"Couldn't schedule the daily run — {msg}"
+            return
+        if changed:
+            log("pointed launch agents at", planning.app_bundle() or "this checkout",
+                "·", ", ".join(changed))
+
+    def warn_not_installed(self, reason: str) -> None:
+        """Running from the disk image, or from Gatekeeper's translocated copy.
+
+        Both are read-only paths that won't exist next time, so there is nothing
+        useful to schedule against — say so plainly and stop rather than install
+        a job that would silently never run.
+        """
+        rumps.alert(
+            title="Move Costpoint Timesheet to Applications",
+            message=(f"{reason}\n\nDrag it into your Applications folder and open it "
+                     "from there. Until then the daily run can't be scheduled, "
+                     "because the copy it would point at disappears as soon as the "
+                     "disk image is ejected."),
+            ok="Quit")
+        rumps.quit_application()
+
     def refresh_next_title(self) -> None:
         sched = planning.read_schedule()
         if sched is None:
-            self.i_next.title = "⏰  Next run · not scheduled (run ./deploy.sh)"
+            self.i_next.title = "⏰  Next run · not scheduled"
             return
         nxt = planning.next_run(*sched)
         when = "today" if nxt.date() == date.today() else f"{nxt:%a %b %-d}"
@@ -1065,25 +1119,84 @@ class TrayApp(rumps.App):
         subprocess.run(["open", planning.LOG_PATH], check=False)
 
 
-def single_instance_or_exit():
-    """Hold an exclusive lock for the life of the process so a second launch
-    (e.g. the launchd agent starting while a hand-run copy is up) bows out
-    instead of putting a second icon in the menu bar."""
+def _stand_down_incumbent(fh) -> bool:
+    """Ask the copy that already holds the lock to quit, and wait for it.
+
+    Whatever is holding the lock is usually launchd's, so it has to be booted
+    out first — kill the process alone and KeepAlive starts it straight back up.
+    Returns True once the lock is ours.
+    """
+    import fcntl
+    import signal
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{planning.TRAY_LABEL}"],
+                   capture_output=True, check=False)
+    fh.seek(0)
+    try:
+        pid = int((fh.read() or "").strip() or 0)
+    except ValueError:
+        pid = 0
+    if pid and pid != os.getpid():
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(50):                       # up to five seconds to let go
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
+def single_instance_or_exit(agent: bool):
+    """Hold an exclusive lock for the life of the process, so two copies never
+    put two icons in the menu bar.
+
+    Which copy backs off depends on who started it. launchd (--agent) always
+    yields: the running copy is the one the user is looking at. A copy the user
+    just launched wins instead — double-clicking the app has to do something
+    visible, and what it is usually displacing is a stale copy from an older
+    install that launchd started at login.
+    """
     import fcntl
     os.makedirs(planning.APP_DIR, exist_ok=True)
-    fh = open(os.path.join(planning.APP_DIR, "tray.lock"), "w")
+    # Opened "a+", not "w": truncating up front would destroy the incumbent's
+    # pid before we had a chance to read it.
+    fh = open(os.path.join(planning.APP_DIR, "tray.lock"), "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        # Exit 0, not 1: the launchd agent has KeepAlive/SuccessfulExit=false, so
-        # a non-zero exit here would restart it forever against a hand-run copy.
-        print("Another copy of the tray app is already running; exiting.")
-        sys.exit(0)
+        if agent:
+            # Exit 0, not 1: the launchd agent has KeepAlive/SuccessfulExit=false,
+            # so a non-zero exit here would restart it forever against the copy
+            # that already holds the lock.
+            print("Another copy of the tray app is already running; exiting.")
+            sys.exit(0)
+        log("another copy holds the lock — taking over")
+        if not _stand_down_incumbent(fh):
+            print("Another copy of the tray app is running and would not quit.",
+                  file=sys.stderr)
+            # This runs before TrayApp().run(), so there is no NSApp yet and
+            # NSAlert would have nothing to be modal for. Creating the shared
+            # application is enough — the alert is the last thing we do.
+            from AppKit import NSApplication
+            NSApplication.sharedApplication()
+            rumps.alert("Costpoint Timesheet is already running",
+                        "Another copy is in the menu bar and wouldn't stand down. "
+                        "Quit it from its menu, then open this one again.")
+            sys.exit(0)
+    fh.seek(0)
+    fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
     return fh                       # keep it open — closing releases the lock
 
 
 if __name__ == "__main__":
-    _lock = single_instance_or_exit()
-    TrayApp().run()
+    # launchd passes --agent (see plan.tray_command); a user double-clicking the
+    # app passes nothing, and LaunchServices may add arguments of its own, so
+    # only this one flag is looked for.
+    _agent = "--agent" in sys.argv[1:]
+    _lock = single_instance_or_exit(_agent)
+    TrayApp(agent=_agent).run()

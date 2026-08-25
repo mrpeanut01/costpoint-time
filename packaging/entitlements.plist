@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime exceptions. Notarization requires the hardened runtime, and
+  the hardened runtime's defaults are stricter than a bundled CPython can live
+  with, so these three put back exactly what it needs and nothing else.
+
+  There is deliberately no App Sandbox here: the app writes launchd plists in
+  ~/Library/LaunchAgents and shells out to launchctl, neither of which a sandbox
+  permits. It is distributed with Developer ID, not through the App Store.
+-->
+<plist version="1.0">
+<dict>
+  <!-- libffi builds its closures at runtime; every ctypes callback needs this. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- The interpreter dlopen()s dozens of extension modules from inside the
+       bundle. They are signed with the same identity as the app, but stripping
+       leaves some without the team identifier library validation insists on. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

@@ -1,0 +1,11 @@
+# Build-time only. The app itself needs nothing from this file at runtime —
+# its dependencies are in ../requirements.txt.
+
+# Pinned, because py2app decides the entire shape of the bundle: which Python
+# goes in, how the launcher stubs are built, what ends up in the zip. Bump it
+# deliberately and rebuild a release candidate, not as a drive-by.
+py2app==0.28.10
+
+# py2app is still written against distutils, which Python 3.12 removed from the
+# standard library; setuptools is where it lives now.
+setuptools>=68

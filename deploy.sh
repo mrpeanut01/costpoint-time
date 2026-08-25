@@ -1,18 +1,23 @@
 #!/bin/zsh
-# Deploy the timesheet automation as a self-contained app OUTSIDE ~/Documents.
+# Install the timesheet automation from this source checkout, for development.
 #
-# Why this exists: macOS TCC blocks launchd background agents from reading
-# ~/Documents (no GUI session to grant consent), so a venv/script living there
-# hangs forever in open() at Python startup when run from launchd. Running from
-# ~/Library/Application Support (not TCC-protected) avoids it entirely.
+# Most people want the .dmg instead — https://github.com/mrpeanut01/costpoint-time/releases
+# — which is the same code in an app bundle with its own Python inside. This
+# script is for running the code you're editing.
 #
-# Installs two launchd jobs:
+# Why it deploys OUT of the repo: macOS TCC blocks launchd background agents
+# from reading ~/Documents (there's no GUI session to grant consent), so a venv
+# living there hangs forever in open() at Python startup when launchd starts it,
+# while working perfectly from Terminal. ~/Library/Application Support isn't
+# TCC-protected, so running from there avoids it entirely.
+#
+# Installs the same two launchd jobs the .app installs, via the same code:
 #   com.costpoint-timesheet.daily   weekdays, fills and signs the timesheet
 #   com.costpoint-timesheet.tray    at login, the menu bar app
 #
-# Re-run it any time you change the code. Credentials are NOT overwritten: the
-# tray app owns .env in the deploy dir, and this script only seeds it the first
-# time (from the repo's .env, if you have one).
+# Re-run it any time you change the code — it restarts the tray. Credentials are
+# NOT overwritten: the tray app owns .env in the deploy dir, and this script only
+# seeds it the first time (from the repo's .env, if you have one).
 #
 # Usage: ./deploy.sh
 
@@ -23,8 +28,6 @@ DEPLOY="$HOME/Library/Application Support/costpoint-timesheet"
 LOG="$HOME/Library/Logs/costpoint-timesheet.log"
 LABEL="com.costpoint-timesheet.daily"
 TRAY_LABEL="com.costpoint-timesheet.tray"
-PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
-TRAY_PLIST="$HOME/Library/LaunchAgents/${TRAY_LABEL}.plist"
 
 PYTHON="/opt/homebrew/opt/python@3.13/bin/python3.13"   # stable Homebrew path
 
@@ -59,7 +62,7 @@ chmod 600 "$DEPLOY/.env"
 
 echo "→ Copying code"
 cp "$SRC/timesheet.py" "$SRC/costpoint_mobile.py" "$SRC/plan.py" \
-   "$SRC/tray.py" "$SRC/requirements.txt" "$DEPLOY/"
+   "$SRC/tray.py" "$SRC/appversion.py" "$SRC/requirements.txt" "$DEPLOY/"
 
 echo "→ Building self-contained venv"
 if [[ ! -x "$DEPLOY/.venv/bin/python3" ]]; then
@@ -79,118 +82,19 @@ exec "$HERE/.venv/bin/python3" "$HERE/timesheet.py" "$@"
 LAUNCHER
 chmod +x "$DEPLOY/costpoint-timesheet"
 
-echo "→ Installing launchd plist (weekdays 09:00 America/New_York)"
-cat > "$PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LABEL}</string>
-
-  <!-- Call the venv Python directly. App lives in ~/Library/Application Support,
-       which (unlike ~/Documents) is NOT TCC-protected, so launchd can read it. -->
-  <key>ProgramArguments</key>
-  <array>
-    <string>${DEPLOY}/.venv/bin/python3</string>
-    <string>${DEPLOY}/timesheet.py</string>
-    <string>--save</string>
-  </array>
-
-  <key>WorkingDirectory</key>
-  <string>${DEPLOY}</string>
-
-  <!-- 09:00 local. Mac is on America/New_York, so this is 9 AM Eastern. Running
-       early means a missed prior day is self-healed before it counts as late. -->
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
-  </array>
-
-  <key>StandardOutPath</key>
-  <string>${LOG}</string>
-  <key>StandardErrorPath</key>
-  <string>${LOG}</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONUNBUFFERED</key>
-    <string>1</string>
-  </dict>
-
-  <key>RunAtLoad</key>
-  <false/>
-</dict>
-</plist>
-PLIST
-
-echo "→ Installing tray plist (menu bar app, starts at login)"
-cat > "$TRAY_PLIST" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${TRAY_LABEL}</string>
-
-  <key>ProgramArguments</key>
-  <array>
-    <string>${DEPLOY}/.venv/bin/python3</string>
-    <string>${DEPLOY}/tray.py</string>
-  </array>
-
-  <key>WorkingDirectory</key>
-  <string>${DEPLOY}</string>
-
-  <key>RunAtLoad</key>
-  <true/>
-
-  <!-- Restart if it crashes, but respect Quit from the menu (a clean exit). -->
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-
-  <!-- RunAtLoad only fires at login, so on a Mac that stays logged in for weeks
-       a clean exit (Quit, or being killed during a sleep/wake) would leave the
-       app down indefinitely. Try again each weekday morning: launchd skips the
-       start if it's already running, and the app's own lock file is a second
-       guard. Quit still stops it for the rest of the day. -->
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
-  </array>
-
-  <key>StandardOutPath</key>
-  <string>${LOG}</string>
-  <key>StandardErrorPath</key>
-  <string>${LOG}</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PYTHONUNBUFFERED</key>
-    <string>1</string>
-  </dict>
-</dict>
-</plist>
-PLIST
-
-echo "→ Reloading launchd jobs"
-for L in "${LABEL}:${PLIST}" "${TRAY_LABEL}:${TRAY_PLIST}"; do
-  lbl="${L%%:*}"; pl="${L#*:}"
-  launchctl bootout "gui/$(id -u)/${lbl}" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$pl"
-  launchctl print "gui/$(id -u)/${lbl}" >/dev/null && echo "✓ Loaded $lbl"
-done
+# The plists are written by plan.py, which is also what the .app uses and what
+# the tray's "run weekdays at" menu rewrites. Running it from $DEPLOY with the
+# venv's interpreter is what makes the jobs point at this deployed copy, and
+# force=True restarts them even when the plists themselves haven't changed —
+# the code behind them just did.
+echo "→ Installing launch agents"
+( cd "$DEPLOY" && "$DEPLOY/.venv/bin/python3" -c '
+import plan
+schedule = plan.read_schedule() or (plan.DEFAULT_HOUR, plan.DEFAULT_MINUTE)
+plan.sync_agents(force=True)
+print(f"✓ {plan.DAILY_LABEL} — weekdays at {plan.fmt_time(*schedule)}")
+print(f"✓ {plan.TRAY_LABEL} — at login")
+' )
 
 echo
 echo "Done. Deployed to: $DEPLOY"
