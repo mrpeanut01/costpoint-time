@@ -156,6 +156,20 @@ cat > "$TRAY_PLIST" <<PLIST
     <false/>
   </dict>
 
+  <!-- RunAtLoad only fires at login, so on a Mac that stays logged in for weeks
+       a clean exit (Quit, or being killed during a sleep/wake) would leave the
+       app down indefinitely. Try again each weekday morning: launchd skips the
+       start if it's already running, and the app's own lock file is a second
+       guard. Quit still stops it for the rest of the day. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+
   <key>StandardOutPath</key>
   <string>${LOG}</string>
   <key>StandardErrorPath</key>

@@ -196,6 +196,14 @@ python tray.py          # run the menu bar app from the repo
 Only one instance runs at a time — a hand-run copy and the installed agent won't
 both put an icon in the menu bar.
 
+**Quit** stops the app until the next login or the next weekday morning: launchd
+starts it at login, and retries each weekday at 07:00 in case it exited while you
+were logged in. To bring it back right away:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.costpoint-timesheet.tray
+```
+
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.costpoint-timesheet.daily   # run the daily job now
 launchctl bootout   gui/$(id -u)/com.costpoint-timesheet.tray       # stop the menu bar app
