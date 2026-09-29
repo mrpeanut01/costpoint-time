@@ -47,7 +47,7 @@ OPTIONS = {
     "arch": ARCH,
     "iconfile": "packaging/icon.icns",
     "plist": PLIST,
-    "resources": ["LICENSE"],
+    "resources": ["LICENSE", "icons"],
 
     # A second executable in Contents/MacOS, from the same interpreter and the
     # same code: this is what the daily launch agent runs. See the file itself.

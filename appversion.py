@@ -8,4 +8,4 @@ so cutting a release is: bump this, commit, tag `v<same number>`, push.
 every module into one zip, where a name that common is asking to be shadowed.)
 """
 
-__version__ = "1.0.0"
+__version__ = "0.1.1"

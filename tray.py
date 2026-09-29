@@ -36,6 +36,7 @@ import sys
 import threading
 import time
 import traceback
+from pathlib import Path
 from datetime import date, datetime, timedelta
 
 import plan as planning
@@ -64,6 +65,13 @@ ICON_HOLIDAY = "🎉"
 ICON_UNSET = "⚪️"
 ICON_BUSY = "🔄"
 ICON_ERROR = "⚠️"
+
+# Menu bar art (clock over a punched timecard, tinted per state) lives in icons/;
+# see make_icons.py. If the PNGs aren't deployed we fall back to the emoji above.
+# py2app puts data files in Contents/Resources (RESOURCEPATH), not beside the zipped code.
+ICON_DIR = Path(os.environ.get("RESOURCEPATH") or Path(__file__).resolve().parent) / "icons"
+ICON_FILES = {ICON_OK: "ok", ICON_MISSING: "missing", ICON_PTO: "pto", ICON_HOLIDAY: "holiday",
+              ICON_UNSET: "unset", ICON_BUSY: "busy", ICON_ERROR: "error"}
 
 # strip geometry (points)
 BOX_W, BOX_H, GAP = 13, 14, 3
@@ -666,6 +674,8 @@ class StripView(NSView):
 class TrayApp(rumps.App):
     def __init__(self, agent: bool = False):
         super().__init__(ICON_UNSET, quit_button=None)
+        self._shown = None
+        self.set_state_icon(ICON_UNSET)
         global _OWNER
         _OWNER = self
         self.agent = agent            # True when launchd started us, not the user
@@ -1043,6 +1053,16 @@ class TrayApp(rumps.App):
         return False
 
     # ── repaint (main thread, once a second) ──────────────────────────────────
+    def set_state_icon(self, state: str) -> None:
+        if state == self._shown:
+            return
+        self._shown = state
+        png = ICON_DIR / f"{ICON_FILES[state]}.png"
+        if png.exists():
+            self.icon, self.template, self.title = str(png), False, None
+        else:
+            self.icon, self.title = None, state
+
     def tick(self, _=None) -> None:
         eng = self.engine
         today = date.today()
@@ -1051,21 +1071,21 @@ class TrayApp(rumps.App):
         view = planning.day_view(today, eng.plan, eng.status, federal, today)
 
         if eng.busy:
-            self.title = ICON_BUSY
+            self.set_state_icon(ICON_BUSY)
         elif not planning.have_credentials() or not planning.Config.load().is_complete():
-            self.title = ICON_UNSET
+            self.set_state_icon(ICON_UNSET)
         elif eng.status.error:
-            self.title = ICON_ERROR
+            self.set_state_icon(ICON_ERROR)
         elif view["state"] in ("holiday", "unsure"):
-            self.title = ICON_HOLIDAY
+            self.set_state_icon(ICON_HOLIDAY)
         elif view["state"] == "pto":
-            self.title = ICON_PTO
+            self.set_state_icon(ICON_PTO)
         elif view["state"] == "unknown":
-            self.title = ICON_UNSET
+            self.set_state_icon(ICON_UNSET)
         elif view["state"] in ("filled", "weekend"):
-            self.title = ICON_MISSING if self.any_missing() else ICON_OK
+            self.set_state_icon(ICON_MISSING if self.any_missing() else ICON_OK)
         else:
-            self.title = ICON_MISSING
+            self.set_state_icon(ICON_MISSING)
 
         if view["state"] == "filled":
             line = f"Today · {today:%a %b %-d} — {T.hours_str(view['hours'])}h {view['label']}"
