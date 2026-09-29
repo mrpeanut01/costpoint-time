@@ -63,6 +63,7 @@ chmod 600 "$DEPLOY/.env"
 echo "→ Copying code"
 cp "$SRC/timesheet.py" "$SRC/costpoint_mobile.py" "$SRC/plan.py" \
    "$SRC/tray.py" "$SRC/appversion.py" "$SRC/requirements.txt" "$DEPLOY/"
+rm -rf "$DEPLOY/icons" && cp -R "$SRC/icons" "$DEPLOY/icons"
 
 echo "→ Building self-contained venv"
 if [[ ! -x "$DEPLOY/.venv/bin/python3" ]]; then
