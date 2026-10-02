@@ -1216,4 +1216,8 @@ if __name__ == "__main__":
     # only this one flag is looked for.
     _agent = "--agent" in sys.argv[1:]
     _lock = single_instance_or_exit(_agent)
+    # The .app gets this from LSUIElement in its Info.plist; the dev deploy runs
+    # a bare venv python, which has no plist and would otherwise show a Dock icon.
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+    NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     TrayApp(agent=_agent).run()
